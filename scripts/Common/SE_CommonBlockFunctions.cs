@@ -85,7 +85,12 @@ namespace CommonBlockFunctions
             {
                 logger.log(LogLevel.DEBUG, "Executing " + functionName);
                 logger.addToCallStack(functionName);
-                availableFunctions[functionName.ToLower()].execute(logger, functionArgs);
+                var f = availableFunctions[functionName.ToLower()];
+                if (functionArgs.Length != f.expectedNumberOfArguments())
+                {
+                    throw this.invalidUsageException(logger, f);
+                }
+                f.execute(logger, functionArgs);
             }
             catch (Exception e)
             {
@@ -104,6 +109,7 @@ namespace CommonBlockFunctions
             string getName();
             string usage();
             string example();
+            int expectedNumberOfArguments();
             void execute(Logger logger, String[] args);
         }
 
@@ -127,6 +133,10 @@ namespace CommonBlockFunctions
             public string example()
             {
                 return "My super rotor;4";
+            }
+
+            public int expectedNumberOfArguments(){
+                return 2;
             }
 
             public void execute(Logger logger, String[] args)
@@ -165,6 +175,10 @@ namespace CommonBlockFunctions
             public string example()
             {
                 return "superRotor;15;22";
+            }
+
+            public int expectedNumberOfArguments(){
+                return 3;
             }
 
             public void execute(Logger logger, String[] args)
@@ -213,6 +227,10 @@ namespace CommonBlockFunctions
             public string example()
             {
                 return "My Pistons;3.5";
+            }
+
+            public int expectedNumberOfArguments(){
+                return 2;
             }
 
             public void execute(Logger logger, String[] args)
@@ -266,6 +284,10 @@ namespace CommonBlockFunctions
             public string example()
             {
                 return "My Pistons;3.5;4.5";
+            }
+
+            public int expectedNumberOfArguments(){
+                return 3;
             }
 
             public void execute(Logger logger, String[] args)
@@ -324,6 +346,10 @@ namespace CommonBlockFunctions
                 return "ERROR;Something bad happened";
             }
 
+            public int expectedNumberOfArguments(){
+                return 2;
+            }
+
             public void execute(Logger logger, String[] args)
             {
                 if (args.Length != 2)
@@ -361,6 +387,7 @@ namespace CommonBlockFunctions
         public enum LogLevel
         {
             ERROR,
+            WARN,
             INFO,
             DEBUG
         }
@@ -375,13 +402,6 @@ namespace CommonBlockFunctions
                 this.debugTextPanel = debugTextPanel;
                 this.callStack = new List<string>();
             }
-
-            /*
-            System.InvalidOperationException: Invalid property
-               at Sandbox.ModAPI.Interfaces.TerminalPropertyExtensions.Cast[TValue](ITerminalProperty property)
-               at Program.SetPistonGroupLimits.execute(Logger logger, String[] args)
-               at Program.Main(String arg, UpdateType updateSource)
-               */
 
             public void log(LogLevel logLevel, string message)
             {
