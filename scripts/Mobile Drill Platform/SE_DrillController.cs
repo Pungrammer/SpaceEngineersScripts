@@ -36,11 +36,64 @@ namespace DrillController
         IMyProgrammableBlock commonFunctions;
         IMyTimerBlock startDrillingCaller;
         IMyTimerBlock stopDrillingCaller;
+        List<IMyExtendedPistonBase> pistons;
+
+        float maxDepth;
+        float readyPositon;
+        float readyPositionPerPiston;
+        float drillSpeed; // 0.1m/s divided by count of pistons
+        float positioningSpeed; // 0.5m/s divided by count of pistons
         public Program()
         {
             commonFunctions = GridTerminalSystem.GetBlockWithName("[PG]CommonFunctions") as IMyProgrammableBlock;
+            if (commonFunctions == null)
+            {
+                Echo("Needs a block with common functions called \"[PG]CommonFunctions\"");
+                return;
+            }
             startDrillingCaller = GridTerminalSystem.GetBlockWithName("Start_Drilling_Caller") as IMyTimerBlock;
+            if (startDrillingCaller == null)
+            {
+                commonFunctions.TryRun("DrillController->Constructor;log;ERROR;Missing 'Start_Drilling_Caller' timer block");
+                return;
+            }
             stopDrillingCaller = GridTerminalSystem.GetBlockWithName("Stop_Drilling_Caller") as IMyTimerBlock;
+            if (stopDrillingCaller == null)
+            {
+                commonFunctions.TryRun("DrillController->Constructor;log;ERROR;Missing 'Stop_Drilling_Caller' timer block");
+                return;
+            }
+
+            IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName("DT Pistons");
+            if (group == null)
+            {
+                commonFunctions.TryRun("DrillController->Constructor;log;ERROR;Missing 'DT Pistons' piston group");
+                return;
+            }
+            pistons = new List<IMyExtendedPistonBase>();
+            group.GetBlocksOfType(pistons, piston => piston.Enabled);
+
+            // Each piston can extend 10m
+            maxDepth = 10 * pistons.Count;
+
+            // Ready position is 10m deep. So each piston needs to be extended by a fraction of it.
+            // Pistons only support precision up to 4 places after the comma (0.1234m)
+            readyPositionPerPiston = (float)Math.Round(10f / pistons.Count, 1);
+            readyPositon = (float)Math.Round(readyPositionPerPiston * pistons.Count, 1);
+
+            drillSpeed = 0.5f / pistons.Count;
+            positioningSpeed = 1f / pistons.Count;
+
+            string msg = string.Format("\n"
+            + "  maxDepth              : {0}\n"
+            + "  readyPosition         : {1}\n"
+            + "  readyPositionPerPiston: {2}\n"
+            + "  drillSpeed            : {3}\n"
+            + "  positioningSpeed      : {4}\n"
+            + "  pistonCount           : {5}\n",
+            maxDepth, readyPositon, readyPositionPerPiston, drillSpeed, positioningSpeed, pistons.Count
+            );
+            commonFunctions.TryRun("DrillController->Constructor;log;DEBUG;New controller:" + msg);
         }
 
         public void Save() { }
@@ -78,19 +131,39 @@ namespace DrillController
         // In this position the drill is ready to start drilling at any moment, but the platform can still be moved.
         private void getReady()
         {
-            setPistonGroupVelocity("GetReady", 0.05f);
-            setPistonGroupLimits("GetReady", 4, 4);
+            float newPistonVelocity;
+            if (getPistonDistance(pistons) < readyPositionPerPiston)
+            {
+                // Extend pistons if they are above the ready positon
+                newPistonVelocity = positioningSpeed;
+            }
+            else
+            {
+                // Retract the pistons if they are under the ready positon
+                newPistonVelocity = -positioningSpeed;
+            }
+            setPistonGroupVelocity("GetReady", newPistonVelocity);
+            setPistonGroupLimits("GetReady", readyPositionPerPiston, readyPositionPerPiston);
+
+            setRotorVelocity("GetTransport", 1);
+            setRotorLimits("GetTransport", 0, 1);
+
+            // TODO: Disable merge block
         }
 
         // Returns the drill into its transport position.
         private void getTransport()
         {
-            setPistonGroupVelocity("GetTransport", -0.05f);
+            setPistonGroupVelocity("GetTransport", -positioningSpeed);
             setPistonGroupLimits("GetTransport", 0, 0);
 
             // Make sure the drill head is in the "ready" positon
-            setRotorVelocity("GetTransport", 0);
+            setRotorVelocity("GetTransport", 1);
             setRotorLimits("GetTransport", 0, 1);
+
+            //TODO: Remove this echo
+            Echo(startDrillingCaller.ToString());
+            Echo(stopDrillingCaller.ToString());
 
             // Ensure no other actions are running
             startDrillingCaller.StopCountdown();
@@ -101,20 +174,20 @@ namespace DrillController
         // Needs to be in the "ready" position.
         private void start()
         {
-            double totalPistonDistance = getPistonDistance();
-            if (totalPistonDistance != 40.0)
+            double totalPistonDistance = getPistonDistance(pistons);
+            if (Math.Round(totalPistonDistance, 1) != readyPositon)
             {
-                string msg = "Pistons are in wrong positon. They need to be exactly at 100m. Where at " + totalPistonDistance;
+                string msg = String.Format("Pistons are in wrong positon. They need to be exactly at {0}m. Where at {1}", readyPositon, totalPistonDistance);
                 Echo(msg);
-                commonFunctions.TryRun("StopDrilling;Log;INFO;" + msg);
+                commonFunctions.TryRun("DrillController->start;Log;INFO;" + msg);
                 return;
             }
 
-            setPistonGroupVelocity("Start", 0.01f);
-            setPistonGroupLimits("Start", 4, 10);
+            setPistonGroupVelocity("start", drillSpeed);
+            setPistonGroupLimits("start", readyPositionPerPiston, maxDepth);
 
-            setRotorVelocity("Start", 4);
-            setRotorLimits("Start", -361, 361);
+            setRotorVelocity("start", 4);
+            setRotorLimits("start", -361, 361);
 
             setDrillStatus(true);
 
@@ -125,26 +198,24 @@ namespace DrillController
         // Stops the drilling. If not forced (aborting the drill hole), it will not do anything until max depth is reached
         private void stop(Boolean force)
         {
-            // TODO: Make depth configurable via CustomData of something
-            var commonFunctions = GridTerminalSystem.GetBlockWithName("[PG]CommonFunctions") as IMyProgrammableBlock;
-
+            // TODO: Make depth configurable via CustomData
             if (!force)
             {
-                double totalPistonDistance = getPistonDistance();
-                if (totalPistonDistance != 100.0)
+                double totalPistonDistance = getPistonDistance(pistons);
+                if (totalPistonDistance != maxDepth)
                 {
-                    string msg = "Pistons are in wrong positon. They need to be exactly at 100m. Where at " + totalPistonDistance;
+                    string msg = String.Format("Pistons are in wrong positon. They need to be exactly at {0}m. Where at {1}", maxDepth, totalPistonDistance);
                     Echo(msg);
-                    commonFunctions.TryRun("StopDrilling;Log;INFO;" + msg);
+                    commonFunctions.TryRun("DrillController->stop;Log;INFO;" + msg);
                     return;
                 }
             }
 
-            setPistonGroupVelocity("Stop", -0.05f);
-            setPistonGroupLimits("Stop", 4, 4);
+            setPistonGroupVelocity("stop", -positioningSpeed);
+            setPistonGroupLimits("stop", readyPositionPerPiston, readyPositionPerPiston);
 
-            setRotorVelocity("Stop", 0);
-            setRotorLimits("Stop", 0, 1);
+            setRotorVelocity("stop", 1);
+            setRotorLimits("stop", 0, 1);
 
             setDrillStatus(false);
 
@@ -177,13 +248,8 @@ namespace DrillController
             commonFunctions.TryRun(String.Format("DrillController->{0};SetRotorLimit;DT Advanced Rotor;{1};{2}", actionName, lowerLimit, upperLimit));
         }
 
-        private double getPistonDistance()
+        private double getPistonDistance(List<IMyExtendedPistonBase> pistons)
         {
-            // Check that the pistons are extended 10m each
-            IMyBlockGroup group = GridTerminalSystem.GetBlockGroupWithName("DT Pistons");
-            List<IMyPistonBase> pistons = new List<IMyPistonBase>();
-            group.GetBlocksOfType(pistons, piston => piston.Enabled);
-
             float completeDistance = 0f;
             foreach (var piston in pistons)
             {
@@ -213,6 +279,7 @@ namespace DrillController
                 drill.Enabled = on;
             }
         }
+
 
         #endregion
     }
